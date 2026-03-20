@@ -1,0 +1,2 @@
+-m pip install --upgrade pip requests certifi
+python -m pip install pip-system-certs
