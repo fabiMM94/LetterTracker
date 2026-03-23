@@ -284,11 +284,36 @@ class Correspondence(WebScrapper):
         self.transfer_cookies_to_requests()
 
 
+class SearchResult(Correspondence):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def get_msgs_by_kw(
+        self, keywords: list[str], doc_type: str, companies: list[str]
+    ) -> dict[str, str]:
+        """Returns a dictionary of received messages containing any of the keywords,
+        with the following structure: {'code1': 'url1', 'code2': 'url2', ...}.
+        """
+        messages = {}
+        for keyword, comp in zip(keywords, companies):
+
+            self.search(
+                keyword=keyword,
+                doc_type=doc_type,
+                from_date=datetime(2022, 1, 1),
+                company=comp,
+            )
+            # search_results = self.scrapper.get_all_search_results()
+            # messages.update(search_results)
+
+        return messages
+
+
 if __name__ == "__main__":
     bot = None
 
     try:
-        bot = Correspondence(debug=True)
+        bot = SearchResult(debug=True)
 
         print("Abriendo portal de correspondencia...")
         bot.goto_signin_url()
@@ -298,6 +323,12 @@ if __name__ == "__main__":
 
         print("Página de búsqueda abierta correctamente.")
         print("URL actual:", bot.driver.current_url)
+
+        bot.get_msgs_by_kw(
+            keywords=["DE04491-23", "DE12345-24"],
+            doc_type="E",
+            companies=["Aela Generación S.A.", "Aela Generación S.A."],
+        )
 
         input("Presiona ENTER para cerrar el navegador...")
 

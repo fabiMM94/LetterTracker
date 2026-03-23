@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest import result
 from database import DatabaseConnection
 
 # from web_scrapper import Letter
@@ -138,73 +139,124 @@ class EmtpDb(DatabaseConnection):
 
         return db_messages
 
-    def get_view_data(self, view_name: str) -> list[dict]:
-        """get view tables"""
+    # -------------- Nuevo -----------------------------------
+    def get_table_data(
+        self, table_name: str, columns: list[str] | None = None
+    ) -> pd.DataFrame:
         with self.engine.connect() as connection:
-            query = text(f"SELECT * FROM {view_name}")
+            cols = ", ".join(columns) if columns else "*"
+            query = text(f"SELECT {cols} FROM {table_name}")
             result = connection.execute(query).mappings().all()
+
             result_df = pd.DataFrame(result)
 
-        return result_df  # lista de diccionarios
+        if columns:
+            result_df = result_df[columns]
 
-    def get_pending_correlatives(self, df: pd.DataFrame) -> list[str]:
-        """get pending correlativos from PendingMsgQ view"""
-        df["correlativo"] = df["Subject"].str.extract(r"(DE\d{5}-\d{2})")
-        df_pendings = df["correlativo"].dropna().tolist()
-        return df_pendings
+        return result_df
+
+    def get_msg_pending(self, df: pd.DataFrame) -> pd.DataFrame:
+        df_filtered = df[~df["Correlativo"].str.contains("-", na=False)]
+        # df_filtered = df[~df["SentCorrelativo"].str.contains("-", na=False)]
+        return df_filtered
+
+    def get_pending_with_review(self, df_pending: pd.DataFrame) -> pd.DataFrame:
+        # --- MsgReview ---
+        df_msg_review = self.get_table_data("MsgReview", columns=["MsgID", "ReviewID"])
+
+        df_final = df_pending.merge(df_msg_review, on="MsgID", how="left")
+        # --- ReviewMsgEmtpUnit ---
+        df_review_msg_unit = self.get_table_data(
+            "ReviewMsgEmtpUnit", columns=["ReviewID", "MsgEmtpUnitID"]
+        )
+        df_final = df_final.merge(df_review_msg_unit, on="ReviewID", how="left")
+        # --- MsgEmtpUnit (NUEVO) ---
+        df_msg_empt_unit = self.get_table_data(
+            "MsgEmtpUnit", columns=["MsgEmtpUnitID", "ModelUnitID"]
+        )
+        df_final = df_final.merge(df_msg_empt_unit, on="MsgEmtpUnitID", how="left")
+
+        df_model_unit = self.get_table_data(
+            "ModelUnit", columns=["ModelUnitID", "UnitName"]
+        )
+        df_final = df_final.merge(df_model_unit, on="ModelUnitID", how="left")
+
+        return df_final
+
+    def get_pending_with_review2(self) -> pd.DataFrame:
+        query = text(
+            """
+            SELECT
+                m.MsgID,
+                m.MsgTypeID,
+                m.MsgDate,
+                m.Correlativo,
+                m.CompanyName,
+                m.SenderName,
+                m.Subject,
+                mr.ReviewID,
+                rmeu.MsgEmtpUnitID,
+                meu.ModelUnitID,
+                mu.UnitName
+            FROM Msg m
+            LEFT JOIN MsgReview mr
+                ON m.MsgID = mr.MsgID
+            LEFT JOIN ReviewMsgEmtpUnit rmeu
+                ON mr.ReviewID = rmeu.ReviewID
+            LEFT JOIN MsgEmtpUnit meu
+                ON rmeu.MsgEmtpUnitID = meu.MsgEmtpUnitID
+            LEFT JOIN ModelUnit mu
+                ON meu.ModelUnitID = mu.ModelUnitID
+            WHERE m.Correlativo NOT LIKE '%-%'
+        """
+        )
+
+        with self.engine.connect() as connection:
+            result = connection.execute(query).mappings().all()
+            df = pd.DataFrame(result)
+
+        return df
 
 
 if __name__ == "__main__":
     try:
         db = EmtpDb()
-
-        view_name = "PendingMsgQ"  # <-- cámbialo
-
-        print(f"Extraancting View data {view_name}")
-
-        # get data
-        df = db.get_view_data(view_name)
-        print(f"Total Pending Messages: {len(df)}\n")
-
-        # Mostrar primeras filas como tabla
-        print(df.head(20))  # muestra primeras 20 filas
-        df_pendings = db.get_pending_correlatives(df)
-        print(df_pendings)
+        df = db.get_pending_with_review2()
+        print(df)
+        df.to_excel("output4.xlsx", index=False)
     except Exception as e:
         print(f"Error: {e}")
 
 
-""" if __name__ == "__main__":
+""" Metodo antiguo"""
+"""
+if __name__ == "__main__":
+
     try:
-        print("Conectando a la base de datos...")
+        db = EmtpDb()
 
-        db = EmtpDb(debug=False)
+        tab = "Msg"
+        colums = [
+            "MsgID",
+            "MsgTypeID",
+            "MsgDate",
+            "Correlativo",
+            "CompanyName",
+            "SenderName",
+            "Subject",
+        ]
 
-        print("Extrayendo mensajes desde la tabla Msg...")
-        messages = db.get_msgs_from_db()
+        df = db.get_table_data(table_name=tab, columns=colums)
 
-        print(f"Total mensajes encontrados: {len(messages)}")
+        print(df)
+        msg_pending_table = db.get_msg_pending(df)
+        msg_pending_table.to_excel("output2.xlsx", index=False)
 
-        # Convertir a DataFrame
-        data = []
-        for msg in messages:
-            data.append(
-                {
-                    "MsgID": msg.msg_id,
-                    "Correlativo": msg.correlativo,
-                    "Tipo": msg.doc_type,
-                    "MsgTypeID": msg.msg_type_id,
-                    "URL": msg.msg_url,
-                    "AI Summary": msg.ai_summary,
-                    "AI Request": msg.ai_request,
-                    "AI Another Subject": msg.ai_another_subject,
-                }
-            )
+        msg_pending_with_review = db.get_pending_with_review(msg_pending_table)
+        msg_pending_with_review.to_excel("output3.xlsx", index=False)
 
-        df = pd.DataFrame(data)
-
-        print("\nVista tabla:")
-        print(df.head(20))  # muestra primeras 10 filas
+        print(msg_pending_with_review)
 
     except Exception as e:
-        print(f"Error al consultar la base de datos: {e}") """
+        print(f"Error: {e}")
+        """
