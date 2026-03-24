@@ -1,3 +1,4 @@
+import keyword
 import unicodedata
 from dataclasses import dataclass
 import re
@@ -14,6 +15,10 @@ from requests.exceptions import ChunkedEncodingError, ConnectionError, ReadTimeo
 import urllib3
 from selenium.webdriver.support import expected_conditions as EC
 from datetime import datetime
+import pandas as pd
+
+##-------- Imports from other codes --------##
+from db_data import EmtpDb
 
 
 class WebScrapper:
@@ -288,25 +293,95 @@ class SearchResult(Correspondence):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def get_msgs_by_kw(
-        self, keywords: list[str], doc_type: str, companies: list[str]
+    def get_keywords_and_companies(
+        self, df: pd.DataFrame
+    ) -> tuple[list[str], list[str]]:
+        keywords = df["Subject"].tolist()
+        companies = df["CompanyName"].tolist()
+        return keywords, companies
+
+    def analyze(self, pending_df: pd.DataFrame, doc_types: list[str]) -> list[str]:
+        msgdates = pending_df["MsgDate"].tolist()
+        correlativos = pending_df["Correlativo"].tolist()
+        companies = pending_df["CompanyName"].tolist()
+        senders = pending_df["SenderName"].tolist()
+        subjects = pending_df["Subject"].tolist()
+        units = pending_df["UnitName"].tolist()
+        for msgdate, correlativo, company, sender, subject, unit in zip(
+            msgdates, correlativos, companies, senders, subjects, units
+        ):
+            self.run_search_analysis(
+                keyword=subject, doc_type="E", company=company, msgdate=msgdate
+            )
+
+    def run_search_analysis(
+        self, keyword: list[str], doc_type: str, company: list[str], msgdate: str
     ) -> dict[str, str]:
         """Returns a dictionary of received messages containing any of the keywords,
         with the following structure: {'code1': 'url1', 'code2': 'url2', ...}.
         """
-        messages = {}
-        for keyword, comp in zip(keywords, companies):
 
-            self.search(
-                keyword=keyword,
-                doc_type=doc_type,
-                from_date=datetime(2022, 1, 1),
-                company=comp,
+        self.search(
+            keyword=keyword,
+            doc_type=doc_type,
+            from_date=datetime(2022, 1, 1),
+            company=company,
+        )
+        # search_results = self.scrapper.get_all_search_results()
+        # messages.update(search_results)
+        dates = self.get_row_data(msgdate=msgdate)
+
+    def get_row_data(self, msgdate: str) -> list[dict]:
+        results = []
+        rows = self.driver.find_elements(
+            By.XPATH, "//table[contains(@class, 'table-hover')]//tr[td]"
+        )
+
+        for row in rows:
+            try:
+                cells = row.find_elements(By.TAG_NAME, "td")
+                row_correlativo = cells[0].text.strip()
+                row_date = cells[2].text.strip()
+                row_reference = cells[7].text.strip()  # 👈 nuevo
+                if self.compare_dates(row_date, msgdate):
+                    if self.check_subject_contains_keyword(
+                        reference=row_reference, keyword=keyword
+                    ):
+                        print(
+                            f"Found match: Correlativo={row_correlativo}, Date={row_date}, Reference={row_reference}"
+                        )
+            except Exception:
+                print("There are no more results to fetch.")
+                continue
+        print(results)
+        return results
+
+    def compare_dates(self, date1: str, date2: str) -> bool:
+        try:
+            d1 = pd.to_datetime(date1, dayfirst=True)
+            d2 = pd.to_datetime(date2, dayfirst=True)
+            print(d1, d2)
+            return d1 >= d2
+        except ValueError:
+            print(
+                f"Error parsing dates: '{date1}' or '{date2}' is not in the expected format."
             )
-            # search_results = self.scrapper.get_all_search_results()
-            # messages.update(search_results)
+            return False
 
-        return messages
+    def check_subject_contains_keyword(self, reference: str, keyword: str) -> bool:
+        reference_normalized = (
+            unicodedata.normalize("NFKD", reference)
+            .encode("ASCII", "ignore")
+            .decode("utf-8")
+            .lower()
+        )
+        keyword_normalized = (
+            unicodedata.normalize("NFKD", keyword)
+            .encode("ASCII", "ignore")
+            .decode("utf-8")
+            .lower()
+        )
+        return keyword_normalized in reference_normalized
 
 
 if __name__ == "__main__":
@@ -314,6 +389,8 @@ if __name__ == "__main__":
 
     try:
         bot = SearchResult(debug=True)
+        db = EmtpDb()
+        df = db.get_pending_with_review2()
 
         print("Abriendo portal de correspondencia...")
         bot.goto_signin_url()
@@ -324,12 +401,7 @@ if __name__ == "__main__":
         print("Página de búsqueda abierta correctamente.")
         print("URL actual:", bot.driver.current_url)
 
-        bot.get_msgs_by_kw(
-            keywords=["DE04491-23", "DE12345-24"],
-            doc_type="E",
-            companies=["Aela Generación S.A.", "Aela Generación S.A."],
-        )
-
+        bot.analyze(pending_df=df, doc_types=["E"])
         input("Presiona ENTER para cerrar el navegador...")
 
     except Exception as e:

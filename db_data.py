@@ -194,6 +194,7 @@ class EmtpDb(DatabaseConnection):
                 m.CompanyName,
                 m.SenderName,
                 m.Subject,
+                m.Obsolete,
                 mr.ReviewID,
                 rmeu.MsgEmtpUnitID,
                 meu.ModelUnitID,
@@ -208,6 +209,7 @@ class EmtpDb(DatabaseConnection):
             LEFT JOIN ModelUnit mu
                 ON meu.ModelUnitID = mu.ModelUnitID
             WHERE m.Correlativo NOT LIKE '%-%'
+            AND m.Obsolete = 0
         """
         )
 
