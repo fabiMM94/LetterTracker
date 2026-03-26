@@ -314,13 +314,16 @@ class SearchResult(Correspondence):
             msgdates, correlativos, companies, senders, subjects, units
         ):
             print(f"Running search for unit '{unit}'")
-            self.run_search(
-                keyword=subject,
-                doc_type="E",
-                company=company,
-                msgdate=msgdate,
-                subject=subject,
-            )
+            if subject == None:
+                continue
+            else:
+                self.run_search(
+                    keyword=subject,
+                    doc_type="E",
+                    company=company,
+                    msgdate=msgdate,
+                    unit=unit,
+                )
 
     def run_search(
         self,
@@ -328,7 +331,7 @@ class SearchResult(Correspondence):
         doc_type: str,
         company: list[str],
         msgdate: str,
-        subject: str,
+        unit: str,
     ) -> dict[str, str]:
         """Returns a dictionary of received messages containing any of the keywords,
         with the following structure: {'code1': 'url1', 'code2': 'url2', ...}.
@@ -342,9 +345,9 @@ class SearchResult(Correspondence):
         )
         # search_results = self.scrapper.get_all_search_results()
         # messages.update(search_results)
-        dates = self.process_rows(msgdate=msgdate, keyword=keyword)
+        dates = self.process_rows(msgdate=msgdate, keyword=keyword, unit=unit)
 
-    def process_rows(self, msgdate: str, keyword: str) -> list[dict]:
+    def process_rows(self, msgdate: str, keyword: str, unit: str) -> list[dict]:
         results = []
         rows = self.driver.find_elements(
             By.XPATH, "//table[contains(@class, 'table-hover')]//tr[td]"
@@ -353,14 +356,27 @@ class SearchResult(Correspondence):
         for row in rows:
             try:
                 cells = row.find_elements(By.TAG_NAME, "td")
+                link_element = cells[0].find_element(By.TAG_NAME, "a")
                 row_correlativo = cells[0].text.strip()
+                href = link_element.get_attribute("href")
+
                 row_date = cells[2].text.strip()
                 row_reference = cells[7].text.strip()  # 👈 nuevo
-                same_or_newer_date = self.compare_dates(row_date, msgdate)
-                matches_reference = self.match_responde(keyword, row_reference)
+                print(row_reference)
+                is_date_in_range = self.compare_dates(row_date, msgdate)
+                is_keyword_in_reference = self.reference_contains_keyword(
+                    keyword, row_reference
+                )
+                if is_date_in_range and is_keyword_in_reference:
+                    unit = self.normalize_text(unit)
+                    is_unit_in_reference = unit in self.normalize_text(row_reference)
+                    if is_unit_in_reference:
+                        print(f"Unit '{unit}' is in reference: {is_unit_in_reference}")
+                    else:
+                        self.open_web_page()
 
-                if same_or_newer_date and matches_reference:
-                    print()
+                else:
+                    self.open_web_page(href)
 
             except Exception:
                 print("There are no more results to fetch.")
@@ -372,7 +388,6 @@ class SearchResult(Correspondence):
         try:
             d1 = pd.to_datetime(date1, dayfirst=True)
             d2 = pd.to_datetime(date2, dayfirst=True)
-            print(d1, d2)
             return d1 >= d2
         except ValueError:
             print(
@@ -380,26 +395,24 @@ class SearchResult(Correspondence):
             )
             return False
 
-    def extract_responde(text: str) -> str | None:
+    def extract_responde(self, text: str) -> str | None:
         match = re.search(r"(Responde\s+a\s+DE\d{5}-\d{2})", text, re.IGNORECASE)
         return match.group(1) if match else None
 
-    def normalize_text(text: str) -> str:
+    def normalize_text(self, text: str) -> str:
         text = text.lower()
         text = unicodedata.normalize("NFKD", text)
         text = "".join(c for c in text if not unicodedata.combining(c))
         return text
 
-    def match_responde(self, keyword: str, row_reference: str) -> bool:
+    def reference_contains_keyword(self, keyword: str, row_reference: str) -> bool:
         target = self.extract_responde(keyword)
-
-        if not target:
-            return False
 
         target_norm = self.normalize_text(target)
         reference_norm = self.normalize_text(row_reference)
-
-        return target_norm in reference_norm
+        match = target_norm in reference_norm
+        print(f"Match found: {match}")
+        return match
 
 
 if __name__ == "__main__":
