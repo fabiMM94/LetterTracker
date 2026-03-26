@@ -413,6 +413,8 @@ class SearchResult(Correspondence):
         match = target_norm in reference_norm
         print(f"Match found: {match}")
         return match
+    def check_employee_in_letter(self, employee_name: str) -> bool:
+        
 
 
 if __name__ == "__main__":
