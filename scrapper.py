@@ -1,3 +1,4 @@
+from email.mime import text
 import keyword
 import unicodedata
 from dataclasses import dataclass
@@ -300,7 +301,9 @@ class SearchResult(Correspondence):
         companies = df["CompanyName"].tolist()
         return keywords, companies
 
-    def analyze(self, pending_df: pd.DataFrame, doc_types: list[str]) -> list[str]:
+    def run_pending_searches(
+        self, pending_df: pd.DataFrame, doc_types: list[str]
+    ) -> list[str]:
         msgdates = pending_df["MsgDate"].tolist()
         correlativos = pending_df["Correlativo"].tolist()
         companies = pending_df["CompanyName"].tolist()
@@ -310,12 +313,22 @@ class SearchResult(Correspondence):
         for msgdate, correlativo, company, sender, subject, unit in zip(
             msgdates, correlativos, companies, senders, subjects, units
         ):
-            self.run_search_analysis(
-                keyword=subject, doc_type="E", company=company, msgdate=msgdate
+            print(f"Running search for unit '{unit}'")
+            self.run_search(
+                keyword=subject,
+                doc_type="E",
+                company=company,
+                msgdate=msgdate,
+                subject=subject,
             )
 
-    def run_search_analysis(
-        self, keyword: list[str], doc_type: str, company: list[str], msgdate: str
+    def run_search(
+        self,
+        keyword: list[str],
+        doc_type: str,
+        company: list[str],
+        msgdate: str,
+        subject: str,
     ) -> dict[str, str]:
         """Returns a dictionary of received messages containing any of the keywords,
         with the following structure: {'code1': 'url1', 'code2': 'url2', ...}.
@@ -329,9 +342,9 @@ class SearchResult(Correspondence):
         )
         # search_results = self.scrapper.get_all_search_results()
         # messages.update(search_results)
-        dates = self.get_row_data(msgdate=msgdate)
+        dates = self.process_rows(msgdate=msgdate, keyword=keyword)
 
-    def get_row_data(self, msgdate: str) -> list[dict]:
+    def process_rows(self, msgdate: str, keyword: str) -> list[dict]:
         results = []
         rows = self.driver.find_elements(
             By.XPATH, "//table[contains(@class, 'table-hover')]//tr[td]"
@@ -343,13 +356,12 @@ class SearchResult(Correspondence):
                 row_correlativo = cells[0].text.strip()
                 row_date = cells[2].text.strip()
                 row_reference = cells[7].text.strip()  # 👈 nuevo
-                if self.compare_dates(row_date, msgdate):
-                    if self.check_subject_contains_keyword(
-                        reference=row_reference, keyword=keyword
-                    ):
-                        print(
-                            f"Found match: Correlativo={row_correlativo}, Date={row_date}, Reference={row_reference}"
-                        )
+                same_or_newer_date = self.compare_dates(row_date, msgdate)
+                matches_reference = self.match_responde(keyword, row_reference)
+
+                if same_or_newer_date and matches_reference:
+                    print()
+
             except Exception:
                 print("There are no more results to fetch.")
                 continue
@@ -368,20 +380,26 @@ class SearchResult(Correspondence):
             )
             return False
 
-    def check_subject_contains_keyword(self, reference: str, keyword: str) -> bool:
-        reference_normalized = (
-            unicodedata.normalize("NFKD", reference)
-            .encode("ASCII", "ignore")
-            .decode("utf-8")
-            .lower()
-        )
-        keyword_normalized = (
-            unicodedata.normalize("NFKD", keyword)
-            .encode("ASCII", "ignore")
-            .decode("utf-8")
-            .lower()
-        )
-        return keyword_normalized in reference_normalized
+    def extract_responde(text: str) -> str | None:
+        match = re.search(r"(Responde\s+a\s+DE\d{5}-\d{2})", text, re.IGNORECASE)
+        return match.group(1) if match else None
+
+    def normalize_text(text: str) -> str:
+        text = text.lower()
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(c for c in text if not unicodedata.combining(c))
+        return text
+
+    def match_responde(self, keyword: str, row_reference: str) -> bool:
+        target = self.extract_responde(keyword)
+
+        if not target:
+            return False
+
+        target_norm = self.normalize_text(target)
+        reference_norm = self.normalize_text(row_reference)
+
+        return target_norm in reference_norm
 
 
 if __name__ == "__main__":
@@ -401,7 +419,7 @@ if __name__ == "__main__":
         print("Página de búsqueda abierta correctamente.")
         print("URL actual:", bot.driver.current_url)
 
-        bot.analyze(pending_df=df, doc_types=["E"])
+        bot.run_pending_searches(pending_df=df, doc_types=["E"])
         input("Presiona ENTER para cerrar el navegador...")
 
     except Exception as e:
