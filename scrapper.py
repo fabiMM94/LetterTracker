@@ -20,7 +20,17 @@ import pandas as pd
 
 ##-------- Imports from other codes --------##
 from db_data import EmtpDb
-from pandasgui import show
+import sys
+import pandas as pd
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+from PyQt6.QtCore import Qt
 
 
 class WebScrapper:
@@ -344,8 +354,6 @@ class PendingLettersFinder(Correspondence):
             from_date=datetime(2022, 1, 1),
             company=company,
         )
-        # search_results = self.scrapper.get_all_search_results()
-        # messages.update(search_results)
         new_correlative, status = self.process_rows(
             msgdate=msgdate, keyword=keyword, unit=unit
         )
@@ -450,12 +458,68 @@ class PendingLettersFinder(Correspondence):
         return True
 
 
-class DataShower:
-    def __init__(self, data):
-        self.data = data
+class DataFrameViewer(QMainWindow):
+    def __init__(self, df: pd.DataFrame):
+        super().__init__()
 
-    def show(self):
-        print(self.data)
+        self.setWindowTitle("Reporte de Resultados")
+        self.resize(800, 500)
+
+        self.table = QTableWidget()
+        self.setCentralWidget(self.table)
+
+        self.load_dataframe(df)
+
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+
+        self.table.resizeColumnsToContents()
+        self.table.setAlternatingRowColors(True)
+
+    def load_dataframe(self, df: pd.DataFrame):
+        self.table.setRowCount(df.shape[0])
+        self.table.setColumnCount(df.shape[1])
+        self.table.setHorizontalHeaderLabels(df.columns)
+
+        for i in range(df.shape[0]):
+            for j in range(df.shape[1]):
+                item = QTableWidgetItem(str(df.iat[i, j]))
+                self.table.setItem(i, j, item)
+
+    def keyPressEvent(self, event):
+        if (
+            event.key() == Qt.Key.Key_C
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self.copy_selection()
+        else:
+            super().keyPressEvent(event)
+
+    def copy_selection(self):
+        selected = self.table.selectedRanges()
+        if not selected:
+            return
+
+        s = ""
+        for r in selected:
+            for i in range(r.topRow(), r.bottomRow() + 1):
+                row_data = []
+                for j in range(r.leftColumn(), r.rightColumn() + 1):
+                    item = self.table.item(i, j)
+                    row_data.append(item.text() if item else "")
+                s += "\t".join(row_data) + "\n"
+
+        QApplication.clipboard().setText(s)
+
+    @staticmethod
+    def show_dataframe(df: pd.DataFrame):
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
+
+        viewer = DataFrameViewer(df)
+        viewer.show()
+        app.exec()
 
 
 if __name__ == "__main__":
@@ -466,19 +530,20 @@ if __name__ == "__main__":
         db = EmtpDb()
         df = db.get_pending_with_review2()
 
-        print("Abriendo portal de correspondencia...")
+        print("Open web correspondence...")
         Plf.goto_signin_url()
 
-        print("Login detectado. Yendo a la página de búsqueda...")
+        print("Login detected. Going to the search page...")
         Plf.go_to_search_page()
 
-        print("Página de búsqueda abierta correctamente.")
-        print("URL actual:", Plf.driver.current_url)
+        print("Search page opened successfully.")
+        print("Current URL:", Plf.driver.current_url)
 
         pending_df = Plf.run_pending_searches(pending_df=df, doc_types=["E"])
-        print("Resultados de las búsquedas:")
+        print("Search results:")
         print(pending_df)
-        input("Presiona ENTER para cerrar el navegador...")
+        DataFrameViewer.show_dataframe(pending_df)
+        input("Press ENTER to close the browser...")
 
     except Exception as e:
         print(f"Error: {e}")
