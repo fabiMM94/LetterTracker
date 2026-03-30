@@ -20,6 +20,7 @@ import pandas as pd
 
 ##-------- Imports from other codes --------##
 from db_data import EmtpDb
+from pandasgui import show
 
 
 class WebScrapper:
@@ -290,40 +291,40 @@ class Correspondence(WebScrapper):
         self.transfer_cookies_to_requests()
 
 
-class SearchResult(Correspondence):
+class PendingLettersFinder(Correspondence):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def get_keywords_and_companies(
-        self, df: pd.DataFrame
-    ) -> tuple[list[str], list[str]]:
-        keywords = df["Subject"].tolist()
-        companies = df["CompanyName"].tolist()
-        return keywords, companies
-
     def run_pending_searches(
         self, pending_df: pd.DataFrame, doc_types: list[str]
-    ) -> list[str]:
-        msgdates = pending_df["MsgDate"].tolist()
-        correlativos = pending_df["Correlativo"].tolist()
-        companies = pending_df["CompanyName"].tolist()
-        senders = pending_df["SenderName"].tolist()
-        subjects = pending_df["Subject"].tolist()
-        units = pending_df["UnitName"].tolist()
-        for msgdate, correlativo, company, sender, subject, unit in zip(
-            msgdates, correlativos, companies, senders, subjects, units
-        ):
+    ) -> pd.DataFrame:
+        pending_df["Status"] = None
+        pending_df["New_Correlative"] = None
+        N_row = -1
+        for row in pending_df.itertuples(index=False):
+            N_row = N_row + 1
+            msgid = row.MsgID
+            msgdate = row.MsgDate
+            correlativo = row.Correlativo
+            company = row.CompanyName
+            sender = row.SenderName
+            subject = row.Subject
+            unit = row.UnitName
             print(f"Running search for unit '{unit}'")
             if subject == None:
                 continue
             else:
-                self.run_search(
+                new_correlative, status = self.run_search(
                     keyword=subject,
                     doc_type="E",
                     company=company,
                     msgdate=msgdate,
                     unit=unit,
                 )
+                pending_df.at[N_row, "Status"] = status
+                pending_df.at[N_row, "New_Correlative"] = new_correlative
+        print(pending_df)
+        return pending_df
 
     def run_search(
         self,
@@ -332,7 +333,7 @@ class SearchResult(Correspondence):
         company: list[str],
         msgdate: str,
         unit: str,
-    ) -> dict[str, str]:
+    ) -> tuple[str, str]:
         """Returns a dictionary of received messages containing any of the keywords,
         with the following structure: {'code1': 'url1', 'code2': 'url2', ...}.
         """
@@ -345,46 +346,59 @@ class SearchResult(Correspondence):
         )
         # search_results = self.scrapper.get_all_search_results()
         # messages.update(search_results)
-        dates = self.process_rows(msgdate=msgdate, keyword=keyword, unit=unit)
+        new_correlative, status = self.process_rows(
+            msgdate=msgdate, keyword=keyword, unit=unit
+        )
+        return new_correlative, status
 
     def process_rows(self, msgdate: str, keyword: str, unit: str) -> list[dict]:
-        results = []
+
         rows = self.driver.find_elements(
             By.XPATH, "//table[contains(@class, 'table-hover')]//tr[td]"
         )
-
         for row in rows:
             try:
                 cells = row.find_elements(By.TAG_NAME, "td")
                 link_element = cells[0].find_element(By.TAG_NAME, "a")
-                row_correlativo = cells[0].text.strip()
-                href = link_element.get_attribute("href")
 
+                row_correlativo = cells[0].text.strip()
+                row_href = link_element.get_attribute("href")
                 row_date = cells[2].text.strip()
-                row_reference = cells[7].text.strip()  # 👈 nuevo
-                print(row_reference)
-                is_date_in_range = self.compare_dates(row_date, msgdate)
-                is_keyword_in_reference = self.reference_contains_keyword(
+                row_reference = cells[7].text.strip()
+
+                is_date_in_range = self.is_in_date_range(row_date, msgdate)
+                is_keyword_in_reference = self.is_keyword_in_reference(
                     keyword, row_reference
                 )
+                is_lab_id_in_reference = self.is_lab_id_in_reference(
+                    row_reference, row_correlativo
+                )
+
                 if is_date_in_range and is_keyword_in_reference:
                     unit = self.normalize_text(unit)
                     is_unit_in_reference = unit in self.normalize_text(row_reference)
                     if is_unit_in_reference:
+                        status = "Found Unit in Reference"
                         print(f"Unit '{unit}' is in reference: {is_unit_in_reference}")
+                        return row_correlativo, status
                     else:
-                        self.open_web_page()
+                        self.open_web_page(row_href)
 
-                else:
-                    self.open_web_page(href)
+                elif is_date_in_range and is_lab_id_in_reference:
+                    print(
+                        f"Lab ID '{row_correlativo}' is in reference: {is_lab_id_in_reference}"
+                    )
+                    status = "Found Lab ID"
+                    return row_correlativo, status
 
             except Exception:
+                new_correlativo = ""
+                status = "No Message"
                 print("There are no more results to fetch.")
-                continue
-        print(results)
-        return results
+                return new_correlativo, status
+        return "", "No Message"
 
-    def compare_dates(self, date1: str, date2: str) -> bool:
+    def is_in_date_range(self, date1: str, date2: str) -> bool:
         try:
             d1 = pd.to_datetime(date1, dayfirst=True)
             d2 = pd.to_datetime(date2, dayfirst=True)
@@ -405,7 +419,18 @@ class SearchResult(Correspondence):
         text = "".join(c for c in text if not unicodedata.combining(c))
         return text
 
-    def reference_contains_keyword(self, keyword: str, row_reference: str) -> bool:
+    def is_in_date_range(self, date1: str, date2: str) -> bool:
+        try:
+            d1 = pd.to_datetime(date1, dayfirst=True)
+            d2 = pd.to_datetime(date2, dayfirst=True)
+            return d1 >= d2
+        except ValueError:
+            print(
+                f"Error parsing dates: '{date1}' or '{date2}' is not in the expected format."
+            )
+            return False
+
+    def is_keyword_in_reference(self, keyword: str, row_reference: str) -> bool:
         target = self.extract_responde(keyword)
 
         target_norm = self.normalize_text(target)
@@ -413,33 +438,51 @@ class SearchResult(Correspondence):
         match = target_norm in reference_norm
         print(f"Match found: {match}")
         return match
-    def check_employee_in_letter(self, employee_name: str) -> bool:
-        
+
+    def is_lab_id_in_reference(self, row_reference: str, lab_id: str) -> bool:
+        pattern = r"\(LabID\s*(\d+)\)"
+        match = re.search(pattern, row_reference)
+
+        if not match:
+            return False
+
+        found_lab_id = match.group(1)
+        return True
+
+
+class DataShower:
+    def __init__(self, data):
+        self.data = data
+
+    def show(self):
+        print(self.data)
 
 
 if __name__ == "__main__":
-    bot = None
+    Plf = None
 
     try:
-        bot = SearchResult(debug=True)
+        Plf = PendingLettersFinder(debug=True)
         db = EmtpDb()
         df = db.get_pending_with_review2()
 
         print("Abriendo portal de correspondencia...")
-        bot.goto_signin_url()
+        Plf.goto_signin_url()
 
         print("Login detectado. Yendo a la página de búsqueda...")
-        bot.go_to_search_page()
+        Plf.go_to_search_page()
 
         print("Página de búsqueda abierta correctamente.")
-        print("URL actual:", bot.driver.current_url)
+        print("URL actual:", Plf.driver.current_url)
 
-        bot.run_pending_searches(pending_df=df, doc_types=["E"])
+        pending_df = Plf.run_pending_searches(pending_df=df, doc_types=["E"])
+        print("Resultados de las búsquedas:")
+        print(pending_df)
         input("Presiona ENTER para cerrar el navegador...")
 
     except Exception as e:
         print(f"Error: {e}")
 
     finally:
-        if bot and bot.driver is not None:
-            bot.driver.quit()
+        if Plf and Plf.driver is not None:
+            Plf.driver.quit()
